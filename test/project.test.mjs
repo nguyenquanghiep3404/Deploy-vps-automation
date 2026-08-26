@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { detectPackageManager, detectWorkspace, hasBuildScript, findHardcodedPorts, scanHardcodedPorts, findLocalhostUrls, scanLocalhostUrls } from '../src/utils/project.js';
+import { detectPackageManager, detectWorkspace, hasBuildScript, hasPackageScript, findHardcodedPorts, scanHardcodedPorts, findLocalhostUrls, scanLocalhostUrls } from '../src/utils/project.js';
 
 let root;
 let sub;
@@ -92,6 +92,14 @@ test('hasBuildScript: true chỉ khi có scripts.build', () => {
     assert.equal(hasBuildScript(sub), false);
 
     assert.equal(hasBuildScript(path.join(root, 'nope')), false);
+});
+
+test('hasPackageScript: nhận diện đúng script quality trong package.json', () => {
+    touch(sub, 'package.json', JSON.stringify({ scripts: { lint: 'eslint .', typecheck: 'tsc --noEmit' } }));
+    assert.equal(hasPackageScript(sub, 'lint'), true);
+    assert.equal(hasPackageScript(sub, 'typecheck'), true);
+    assert.equal(hasPackageScript(sub, 'test'), false);
+    assert.equal(hasPackageScript(path.join(root, 'nope'), 'lint'), false);
 });
 
 test('findHardcodedPorts: bắt .listen(số), bỏ qua process.env.PORT', () => {

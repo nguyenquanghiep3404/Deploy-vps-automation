@@ -32,6 +32,25 @@ function cleanWorkingDir(workingDir) {
     return (workingDir || './').replace(/^\.\//, '').replace(/\/+$/, '');
 }
 
+/** Tên file workflow được dùng nhất quán cho cả lúc ghi file và lúc tạo trigger. */
+function getWorkflowFileName(role) {
+    return role === 'Fullstack (Gốc)' ? 'deploy.yml' : `deploy-${role.toLowerCase()}.yml`;
+}
+
+/**
+ * Chỉ chạy workflow của một phần monorepo khi chính thư mục phần đó thay đổi.
+ * Workflow ở gốc repo giữ nguyên hành vi cũ: chạy với mọi thay đổi trên main/master.
+ * Luôn theo dõi file workflow của chính nó để việc sửa cấu hình CI có hiệu lực ngay.
+ */
+function getPushTrigger(workingDir, workflowFileName) {
+    const dir = cleanWorkingDir(workingDir);
+    if (!dir) {
+        return `on:\n  push:\n    branches:\n      - main\n      - master`;
+    }
+
+    return `on:\n  push:\n    branches:\n      - main\n      - master\n    paths:\n      - '${dir}/**'\n      - '.github/workflows/${workflowFileName}'`;
+}
+
 /**
  * Trả về các câu lệnh tương ứng với từng package manager (npm/pnpm/yarn).
  *
@@ -147,8 +166,30 @@ function makeBuildStep(cmds, hasBuild, buildWorkingDir) {
 `;
 }
 
+/**
+ * Sinh các quality gate đã được phát hiện trong package.json.
+ * Mỗi script chạy trước build/deploy; script lỗi sẽ làm workflow dừng ngay.
+ * source = 'root' dành cho script workspace/Turbo tại gốc repo, 'project' cho package con.
+ */
+function makeQualitySteps(cmds, qualityScripts, projectDir) {
+    if (!qualityScripts) return '';
+    const labels = { lint: 'Lint', typecheck: 'Type Check', test: 'Test' };
+    return ['lint', 'typecheck', 'test']
+        .filter(script => qualityScripts[script])
+        .map(script => {
+            const workingDir = qualityScripts[script] === 'project' && projectDir
+                ? `\n        working-directory: ${projectDir}`
+                : '';
+            return `
+      - name: ${labels[script]}${workingDir}
+        run: ${cmds.run(script)}
+`;
+        })
+        .join('');
+}
+
 function getNodeWorkflow(opts) {
-    const { domain, workingDir, usePrisma, port, envSecretName, isWorkspace, packageManager, startScript, hasBuild, buildAtRoot, nodeVersion } = opts;
+    const { domain, workingDir, usePrisma, port, envSecretName, isWorkspace, packageManager, startScript, hasBuild, buildAtRoot, nodeVersion, pushTrigger, qualityScripts } = opts;
     const cmds = pmCommands(packageManager);
     const nodeVer = nodeVersion || '22';
     const cleanDir = cleanWorkingDir(workingDir);
@@ -171,6 +212,7 @@ function getNodeWorkflow(opts) {
         // buildAtRoot mặc định true (build ở gốc) để giữ tương thích; chỉ build trong package con
         // khi được chỉ định rõ là false (gốc không có script build).
         const buildStep = makeBuildStep(cmds, hasBuild, buildAtRoot === false ? cleanDir : '');
+        const qualitySteps = makeQualitySteps(cmds, qualityScripts, cleanDir);
         const envTarget = cleanDir ? `${cleanDir}/.env` : '.env';
         const envStep = getEnvStep(envSecretName, envTarget);
         const vpsRoot = `/var/www/${domain}`;
@@ -189,11 +231,7 @@ function getNodeWorkflow(opts) {
 
         return `name: Deploy Node.js App (Monorepo Workspace)
 
-on:
-  push:
-    branches:
-      - main
-      - master
+${pushTrigger}
 
 jobs:
   deploy:
@@ -209,6 +247,7 @@ jobs:
 ${corepackStep}${envStep}
       - name: Install Dependencies (workspace root)
         run: ${cmds.ci}
+${qualitySteps}
 ${buildStep}
       - name: Copy files to VPS via rsync
         env:
@@ -236,6 +275,7 @@ ${buildStep}
     // Mặc định (không phải workspace). Build chạy trong working-directory của job nên không cần
     // chỉ định riêng. Nguồn rsync TƯƠNG ĐỐI với working-directory (xem rsyncSourceDir).
     const buildStep = makeBuildStep(cmds, hasBuild, '');
+    const qualitySteps = makeQualitySteps(cmds, qualityScripts, cleanDir);
     const rsyncSrc = rsyncSourceDir();
     const envStep = getEnvStep(envSecretName, '.env');
     const vpsScript = joinVpsScript([
@@ -250,11 +290,7 @@ ${buildStep}
 
     return `name: Deploy Node.js App
 
-on:
-  push:
-    branches:
-      - main
-      - master
+${pushTrigger}
 
 jobs:
   deploy:
@@ -270,6 +306,7 @@ jobs:
 ${corepackStep}${envStep}
       - name: Install Dependencies
         run: ${cmds.ci}
+${qualitySteps}
 ${buildStep}
       - name: Copy files to VPS via rsync
         env:
@@ -294,7 +331,7 @@ ${buildStep}
 `;
 }
 
-function getLaravelWorkflow(domain, workingDir, envSecretName, phpVersion) {
+function getLaravelWorkflow(domain, workingDir, envSecretName, phpVersion, pushTrigger) {
     const rsyncSrc = rsyncSourceDir();
     const ver = phpVersion || '8.3';
     // Nạp .env vào thư mục mã nguồn trước khi rsync để file .env được đẩy lên VPS.
@@ -302,11 +339,7 @@ function getLaravelWorkflow(domain, workingDir, envSecretName, phpVersion) {
 
     return `name: Deploy Laravel App
 
-on:
-  push:
-    branches:
-      - main
-      - master
+${pushTrigger}
 
 jobs:
   deploy:
@@ -355,17 +388,13 @@ ${envStep}
 `;
 }
 
-function getPurePhpWorkflow(domain, workingDir, envSecretName) {
+function getPurePhpWorkflow(domain, workingDir, envSecretName, pushTrigger) {
     const rsyncSrc = rsyncSourceDir();
     const envStep = getEnvStep(envSecretName, '.env');
 
     return `name: Deploy PHP App
 
-on:
-  push:
-    branches:
-      - main
-      - master
+${pushTrigger}
 
 jobs:
   deploy:
@@ -389,7 +418,7 @@ ${envStep}
 }
 
 function getSpaWorkflow(opts) {
-    const { domain, workingDir, buildDir, envSecretName, isWorkspace, packageManager, buildAtRoot, nodeVersion } = opts;
+    const { domain, workingDir, buildDir, envSecretName, isWorkspace, packageManager, buildAtRoot, nodeVersion, pushTrigger, qualityScripts } = opts;
     const cmds = pmCommands(packageManager);
     const nodeVer = nodeVersion || '22';
     const cleanDir = cleanWorkingDir(workingDir);
@@ -403,14 +432,11 @@ function getSpaWorkflow(opts) {
         const envTarget = cleanDir ? `${cleanDir}/.env` : '.env';
         const envStep = getEnvStep(envSecretName, envTarget);
         const distPath = cleanDir ? `${cleanDir}/${buildDir}/` : `${buildDir}/`;
+        const qualitySteps = makeQualitySteps(cmds, qualityScripts, cleanDir);
 
         return `name: Deploy SPA (React/Vite/Vue) - Monorepo Workspace
 
-on:
-  push:
-    branches:
-      - main
-      - master
+${pushTrigger}
 
 jobs:
   deploy:
@@ -426,6 +452,7 @@ jobs:
 ${corepackStep}${envStep}
       - name: Install Dependencies (workspace root)
         run: ${cmds.ci}
+${qualitySteps}
 
       - name: Build Project${buildWd}
         run: ${cmds.run('build')}
@@ -449,14 +476,11 @@ ${corepackStep}${envStep}
     const rsyncSrc = path.posix.join(rsyncSourceDir(), buildDir, '/'); // -> 'dist/'
     // Nạp .env trước khi build để Vite/CRA đọc được biến VITE_* / REACT_APP_* lúc build.
     const envStep = getEnvStep(envSecretName, '.env');
+    const qualitySteps = makeQualitySteps(cmds, qualityScripts, cleanDir);
 
     return `name: Deploy SPA (React/Vite/Vue)
 
-on:
-  push:
-    branches:
-      - main
-      - master
+${pushTrigger}
 
 jobs:
   deploy:
@@ -472,6 +496,7 @@ jobs:
 ${corepackStep}${envStep}
       - name: Install Dependencies
         run: ${cmds.ci}
+${qualitySteps}
 
       - name: Build Project
         run: ${cmds.run('build')}
@@ -490,15 +515,11 @@ ${corepackStep}${envStep}
 `;
 }
 
-function getStaticWorkflow(domain, workingDir) {
+function getStaticWorkflow(domain, workingDir, pushTrigger) {
     const rsyncSrc = rsyncSourceDir();
     return `name: Deploy Static Website
 
-on:
-  push:
-    branches:
-      - main
-      - master
+${pushTrigger}
 
 jobs:
   deploy:
@@ -524,7 +545,8 @@ jobs:
 /**
  * Sinh file .github/workflows/deploy*.yml
  * options: { projectType, domain, role, workingDir, buildDir, usePrisma, port,
- *            envSecretName, isWorkspace, phpVersion, packageManager, startScript, hasBuild }
+ *            envSecretName, isWorkspace, phpVersion, packageManager, startScript, hasBuild,
+ *            qualityScripts }
  */
 export function generateWorkflowFile(options) {
     const {
@@ -542,7 +564,8 @@ export function generateWorkflowFile(options) {
         startScript,
         hasBuild,
         buildAtRoot,
-        nodeVersion
+        nodeVersion,
+        qualityScripts
     } = options;
 
     const workflowsDir = path.join(process.cwd(), '.github', 'workflows');
@@ -551,22 +574,22 @@ export function generateWorkflowFile(options) {
         fs.mkdirSync(workflowsDir, { recursive: true });
     }
 
+    const workflowFileName = getWorkflowFileName(role);
+    const pushTrigger = getPushTrigger(workingDir, workflowFileName);
     let workflowContent = '';
     if (projectType.includes('Node.js')) {
-        workflowContent = getNodeWorkflow({ domain, workingDir, usePrisma, port, envSecretName, isWorkspace, packageManager, startScript, hasBuild, buildAtRoot, nodeVersion });
+        workflowContent = getNodeWorkflow({ domain, workingDir, usePrisma, port, envSecretName, isWorkspace, packageManager, startScript, hasBuild, buildAtRoot, nodeVersion, pushTrigger, qualityScripts });
     } else if (projectType === 'PHP (Laravel)') {
-        workflowContent = getLaravelWorkflow(domain, workingDir, envSecretName, phpVersion);
+        workflowContent = getLaravelWorkflow(domain, workingDir, envSecretName, phpVersion, pushTrigger);
     } else if (projectType === 'PHP (Thuần)') {
-        workflowContent = getPurePhpWorkflow(domain, workingDir, envSecretName);
+        workflowContent = getPurePhpWorkflow(domain, workingDir, envSecretName, pushTrigger);
     } else if (projectType === 'React/Vite/Vue (SPA)') {
-        workflowContent = getSpaWorkflow({ domain, workingDir, buildDir, envSecretName, isWorkspace, packageManager, buildAtRoot, nodeVersion });
+        workflowContent = getSpaWorkflow({ domain, workingDir, buildDir, envSecretName, isWorkspace, packageManager, buildAtRoot, nodeVersion, pushTrigger, qualityScripts });
     } else {
-        workflowContent = getStaticWorkflow(domain, workingDir);
+        workflowContent = getStaticWorkflow(domain, workingDir, pushTrigger);
     }
 
-    // Đặt tên file dựa trên role
-    const fileName = role === 'Fullstack (Gốc)' ? 'deploy.yml' : `deploy-${role.toLowerCase()}.yml`;
-    const workflowPath = path.join(workflowsDir, fileName);
+    const workflowPath = path.join(workflowsDir, workflowFileName);
 
     fs.writeFileSync(workflowPath, workflowContent);
     console.log(`Đã tạo file workflow tại: ${workflowPath}`);

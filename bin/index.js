@@ -21,7 +21,7 @@ import {
     mergeEnvContent,
     stripAppPort
 } from '../src/utils/env.js';
-import { detectPackageManager, detectWorkspace, hasBuildScript, scanHardcodedPorts, scanLocalhostUrls, findLocalhostUrls } from '../src/utils/project.js';
+import { detectPackageManager, detectWorkspace, hasBuildScript, hasPackageScript, scanHardcodedPorts, scanLocalhostUrls, findLocalhostUrls } from '../src/utils/project.js';
 import { detectProject, detectDatabase, detectNodeVersion, databaseLabel } from '../src/utils/detect.js';
 import { execa, execaCommand } from 'execa';
 import path from 'path';
@@ -60,7 +60,8 @@ async function collectExtras({ projectType, workingDir, defaultEnvPath, isMonore
         startScript: 'start',
         hasBuild: false,
         buildAtRoot: false,
-        nodeVersion: null
+        nodeVersion: null,
+        qualityScripts: null
     };
 
     const isNode = projectType.includes('Node.js');
@@ -181,6 +182,22 @@ async function collectExtras({ projectType, workingDir, defaultEnvPath, isMonore
         const nv = detectNodeVersion(workDirAbs) || detectNodeVersion(repoRoot);
         extras.nodeVersion = nv;
         if (nv) console.log(chalk.cyan(`   🔍 Tự phát hiện Node version: ${chalk.bold(nv)} (sẽ dùng cho runner & VPS).`));
+
+        // Quality gates: chỉ chạy script đã có sẵn, không tự sửa package.json hay cài thêm dependency.
+        // Với workspace/Turbo, ưu tiên script tại root (thường điều phối toàn bộ packages),
+        // rồi mới dùng script của package hiện tại.
+        const qualityScripts = {};
+        for (const script of ['lint', 'typecheck', 'test']) {
+            if (extras.isWorkspace && hasPackageScript(repoRoot, script)) {
+                qualityScripts[script] = 'root';
+            } else if (hasPackageScript(workDirAbs, script)) {
+                qualityScripts[script] = 'project';
+            }
+        }
+        extras.qualityScripts = Object.keys(qualityScripts).length ? qualityScripts : null;
+        if (extras.qualityScripts) {
+            console.log(chalk.cyan(`   🔍 Quality checks: ${Object.keys(qualityScripts).join(', ')} (chạy trước build/deploy).`));
+        }
     }
 
     // ---- Database (Node / Laravel / PHP thuần) ----
@@ -628,7 +645,8 @@ async function main() {
             startScript: extras.startScript,
             hasBuild: extras.hasBuild,
             buildAtRoot: extras.buildAtRoot,
-            nodeVersion: extras.nodeVersion
+            nodeVersion: extras.nodeVersion,
+            qualityScripts: extras.qualityScripts
         });
 
     } else {
@@ -757,7 +775,8 @@ async function main() {
                 startScript: extras.startScript,
                 hasBuild: extras.hasBuild,
                 buildAtRoot: extras.buildAtRoot,
-                nodeVersion: extras.nodeVersion
+                nodeVersion: extras.nodeVersion,
+                qualityScripts: extras.qualityScripts
             });
         }
 
@@ -916,7 +935,8 @@ async function main() {
                 startScript: part.startScript,
                 hasBuild: part.hasBuild,
                 buildAtRoot: part.buildAtRoot,
-                nodeVersion: part.nodeVersion
+                nodeVersion: part.nodeVersion,
+                qualityScripts: part.qualityScripts
             });
         }
         console.log(chalk.green('✅ Xong Bước 4.'));

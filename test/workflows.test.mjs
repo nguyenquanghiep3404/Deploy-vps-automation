@@ -403,6 +403,52 @@ test('Build-time install LUÔN cài devDependencies (next build/vite build khôn
     assert.ok(!/--production[\s\S]*--include=dev/.test(npmNode.content), 'prod install không được ép devDeps');
 });
 
+test('workflow monorepo chỉ kích hoạt khi thư mục phần đó hoặc workflow của nó thay đổi', () => {
+    const frontend = gen({
+        projectType: SPA, domain: 'web.example.com', role: 'frontend', workingDir: './apps/frontend',
+        buildDir: 'dist', isWorkspace: false, packageManager: 'npm'
+    });
+    const backend = gen({
+        projectType: NODE, domain: 'api.example.com', role: 'backend', workingDir: './apps/backend',
+        usePrisma: false, port: 3001, isWorkspace: false, packageManager: 'npm', startScript: 'start', hasBuild: true
+    });
+
+    assert.match(frontend.content, /paths:\n      - 'apps\/frontend\/\*\*'\n      - '\.github\/workflows\/deploy-frontend\.yml'/);
+    assert.ok(!frontend.content.includes("'apps/backend/**'"), 'sửa backend không được kích hoạt frontend');
+    assert.match(backend.content, /paths:\n      - 'apps\/backend\/\*\*'\n      - '\.github\/workflows\/deploy-backend\.yml'/);
+    assert.ok(!backend.content.includes("'apps/frontend/**'"), 'sửa frontend không được kích hoạt backend');
+});
+
+test('workflow ở gốc repo vẫn chạy với mọi thay đổi trên branch triển khai', () => {
+    const { content } = gen({
+        projectType: STATIC, domain: 'root.example.com', role: 'Fullstack (Gốc)', workingDir: './'
+    });
+    assert.ok(!content.includes('\n    paths:'), 'workflow gốc không được giới hạn theo thư mục');
+});
+
+test('quality scripts chạy trước build và chặn deploy khi có lỗi', () => {
+    const { content } = gen({
+        projectType: NODE, domain: 'api.example.com', role: 'backend', workingDir: './apps/api',
+        usePrisma: false, port: 3001, isWorkspace: false, packageManager: 'pnpm', startScript: 'start', hasBuild: true,
+        qualityScripts: { lint: 'project', typecheck: 'project', test: 'project' }
+    });
+    assert.match(content, /- name: Lint\n        working-directory: apps\/api\n        run: pnpm run lint/);
+    assert.match(content, /- name: Type Check\n        working-directory: apps\/api\n        run: pnpm run typecheck/);
+    assert.match(content, /- name: Test\n        working-directory: apps\/api\n        run: pnpm run test/);
+    assert.ok(content.indexOf('run: pnpm run lint') < content.indexOf('run: pnpm run build'));
+    assert.ok(content.indexOf('run: pnpm run test') < content.indexOf('Copy files to VPS via rsync'));
+});
+
+test('workspace quality script tại gốc chạy không đổi working-directory', () => {
+    const { content } = gen({
+        projectType: SPA, domain: 'web.example.com', role: 'frontend', workingDir: './apps/web',
+        buildDir: 'dist', isWorkspace: true, packageManager: 'npm',
+        qualityScripts: { lint: 'root', typecheck: 'project' }
+    });
+    assert.match(content, /- name: Lint\n        run: npm run lint/);
+    assert.match(content, /- name: Type Check\n        working-directory: apps\/web\n        run: npm run typecheck/);
+});
+
 test('Actions dùng @v4 (checkout/setup-node), không còn @v3 deprecated', () => {
     const node = gen({ projectType: NODE, domain: 'n.com', role: 'Fullstack (Gốc)', workingDir: './', usePrisma: false, port: 3001, isWorkspace: false, packageManager: 'npm', startScript: 'start', hasBuild: true });
     const spa = gen({ projectType: SPA, domain: 's.com', role: 'Fullstack (Gốc)', workingDir: './', buildDir: 'dist', isWorkspace: false, packageManager: 'npm' });

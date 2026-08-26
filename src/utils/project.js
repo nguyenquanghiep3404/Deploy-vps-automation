@@ -64,9 +64,14 @@ export function detectWorkspace(workingDirAbs, repoRootAbs) {
  * Trả về true chỉ khi chắc chắn có script build (tương đương "npm run build --if-present").
  */
 export function hasBuildScript(dirAbs) {
+    return hasPackageScript(dirAbs, 'build');
+}
+
+/** Kiểm tra package.json trong thư mục có một script cụ thể hay không. */
+export function hasPackageScript(dirAbs, scriptName) {
     try {
         const pkg = JSON.parse(fs.readFileSync(path.join(dirAbs, 'package.json'), 'utf8'));
-        return !!(pkg.scripts && pkg.scripts.build);
+        return !!(pkg.scripts && pkg.scripts[scriptName]);
     } catch (e) {
         return false;
     }
